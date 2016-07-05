@@ -1,0 +1,81 @@
+FROM php:5.6-fpm
+
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TIMEZONE=Europe/Paris \
+    MEMORY_LIMIT=256M \
+    MAX_EXECUTION_TIME=90 \
+    PORT=9000 \
+    COMPOSER_HOME=/home/ez/.composer
+
+## Get packages
+### unzip needed due to https://github.com/composer/composer/issues/4471
+RUN apt-get update -y \
+ && apt-get install -q -y --force-yes --no-install-recommends \
+        libfreetype6-dev \
+        libjpeg62-turbo-dev \
+        libxpm-dev \
+        libpng12-dev \
+        libicu-dev \
+        libxslt1-dev \
+        ca-certificates \
+        curl \
+        acl \
+        sudo \
+        unzip \
+        git \
+        php5-twig \
+        php5-memcache php5-memcached \
+        libmemcached-dev \
+        vim \
+        && rm -rf /var/lib/apt/lists/* \
+	&& apt-get clean
+
+
+# Install and configure php plugins
+RUN docker-php-ext-configure mysqli --with-mysqli=mysqlnd \
+ && docker-php-ext-configure pdo_mysql --with-pdo-mysql=mysqlnd \
+ && docker-php-ext-configure gd --with-freetype-dir=/usr/include/ --with-jpeg-dir=/usr/include/ --with-png-dir=/usr/include/ --with-xpm-dir=/usr/include/ --enable-gd-native-ttf --enable-gd-jis-conv \
+ && docker-php-ext-install exif gd mbstring intl xsl zip mysqli pdo_mysql \
+ && docker-php-ext-enable opcache \
+ && pecl install memcached \
+ && docker-php-ext-enable memcached
+ 
+# Install Twig C extension.
+ENV TWIG_VERSION 1.22.3
+ENV TWIG_MD5 41245d409760a0a1d27108a5470e2f6f
+RUN mkdir /tmp/twig && cd /tmp/twig \
+  && curl -fSL "https://github.com/twigphp/Twig/archive/v${TWIG_VERSION}.tar.gz" -o twig.tar.gz \
+  && echo "${TWIG_MD5} *twig.tar.gz" | md5sum -c - \
+  && tar -xz --strip-components=1 -f twig.tar.gz \
+  && rm twig.tar.gz \
+  && cd ext/twig && phpize \
+  && ./configure && make && make install \
+  && cp /tmp/twig/ext/twig/modules/twig.so $(php-config --extension-dir) \
+  && echo "extension=twig.so" > /usr/local/etc/php/conf.d/twig.ini \
+  && cd /tmp && rm -vrf /tmp/twig
+
+
+# Set timezone
+RUN echo $TIMEZONE > /etc/timezone && dpkg-reconfigure --frontend noninteractive tzdata
+
+
+# Add php.ini to the container.
+COPY config/php.ini ${PHP_INI_DIR}/php.ini
+
+
+# Add pid file to be able to restart php-fpm
+RUN sed -i "s@^\[global\]@\[global\]\n\npid = /run/php-fpm.pid@" ${PHP_INI_DIR}-fpm.conf
+
+# Create user and group "ez"
+RUN groupadd -g 10000 ez && \
+  useradd -g ez -G www-data -u 10000 ez --create-home && \
+  echo "umask 0002" >> /etc/bash.bashrc
+
+
+# Create Composer directory (cache and auth files)
+RUN mkdir -p $COMPOSER_HOME && \
+    chown ez:ez $COMPOSER_HOME
+
+# Get Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
